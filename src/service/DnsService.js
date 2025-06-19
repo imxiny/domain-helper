@@ -219,4 +219,38 @@ class DnsService {
             return this.provider.changeRecordStatus(domain, recordId, extra);
         }
     }
+
+    // 获取线路列表（仅腾讯云支持）
+    async getRecordLineList(domain) {
+        if (typeof this.provider.getRecordLineList === 'function') {
+            return this.provider.getRecordLineList(domain);
+        }
+        // 其他云服务商返回默认线路
+        return {
+            count: 1,
+            list: [{
+                name: '默认',
+                id: '0',
+                category: '基础线路'
+            }]
+        };
+    }
+
+    // 按分类获取线路列表（仅腾讯云支持）
+    async getRecordLineCategoryList(domain) {
+        if (typeof this.provider.getRecordLineCategoryList === 'function') {
+            return this.provider.getRecordLineCategoryList(domain);
+        }
+        // 其他云服务商返回默认线路
+        return {
+            count: 1,
+            list: [{
+                name: '默认',
+                id: '0',
+                useful: true,
+                grade: 'DP_Free',
+                subLines: []
+            }]
+        };
+    }
 }

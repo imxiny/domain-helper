@@ -15,13 +15,18 @@ const form = reactive({
     Value: "",
     TTL: 600,
     MX: 10,
-    proxied: false // cloudflare 专属， 默认关闭 是否开启代理
+    proxied: false, // cloudflare 专属， 默认关闭 是否开启代理
+    RecordLine: "默认", // 线路名称
+    RecordLineId: "0" // 线路ID
 })
 const domainInfo = ref(null)
 
 
 const existingRecordValues = {}
 const valueAutoOptions = ref([])
+const recordLines = ref([]) // 线路列表
+const recordLinesLoading = ref(false) // 线路加载状态
+
 const updateExistingValues = (existRecords) => {
     existRecords.forEach(record => {
         if (!existingRecordValues[record.Type]) {
@@ -45,9 +50,17 @@ const openModal = (info, record = null, existRecords = []) => {
     form.proxied = record?.ProxyStatus || false
     form.TTL = record?.TTL || 600
     form.MX = record?.MX || 10
+    form.RecordLine = record?.RecordLine || "默认"
+    form.RecordLineId = record?.LineId || "0"
+    
     // 初始化已存在的记录值
     updateExistingValues(existRecords)
     handleTypeChange(form.RecordType)
+    
+    // 加载线路列表（仅腾讯云需要）
+    if (info.cloud === 'tencent') {
+        loadRecordLines();
+    }
 }
 
 // 监听记录类型变化
@@ -63,6 +76,57 @@ const handleTypeChange = (value) => {
 const filterOption = (input, option) => {
     return option.value.toLowerCase().indexOf(input.toLowerCase()) >= 0
 }
+
+// 加载线路列表
+const loadRecordLines = async () => {
+    if (!domainInfo.value || domainInfo.value.cloud !== 'tencent') {
+        return;
+    }
+    
+    recordLinesLoading.value = true;
+    try {
+        const dns = getDnsService(domainInfo.value.account_key, domainInfo.value.cloud, domainInfo.value.account_info.tokens);
+        const result = await dns.getRecordLineList(domainInfo.value.domain);
+        recordLines.value = result.list;
+    } catch (error) {
+        console.error('加载线路列表失败:', error);
+        message.error('加载线路列表失败: ' + error.toString());
+        // 设置默认线路
+        recordLines.value = [{
+            name: '默认',
+            id: '0',
+            category: '基础线路'
+        }];
+    } finally {
+        recordLinesLoading.value = false;
+    }
+}
+
+// 线路选择改变时的处理
+const handleLineChange = (value) => {
+    const selectedLine = recordLines.value.find(line => line.id === value);
+    if (selectedLine) {
+        form.RecordLineId = selectedLine.id;
+        form.RecordLine = selectedLine.name;
+    }
+}
+
+// 分组线路列表的计算属性
+const groupedLines = computed(() => {
+    const groups = {};
+    recordLines.value.forEach(line => {
+        const category = line.category || '其他';
+        if (!groups[category]) {
+            groups[category] = [];
+        }
+        groups[category].push(line);
+    });
+    
+    return Object.keys(groups).map(category => ({
+        category,
+        lines: groups[category]
+    }));
+})
 
 defineExpose({
     openModal
@@ -96,6 +160,8 @@ const handleOk = () => {
         id: form.RecordId,
         ttl: form.TTL,
         mx: form.MX,
+        line: form.RecordLine,
+        lineId: form.RecordLineId,
     };
     if (domainInfo.value.cloud === 'cloudflare') {
         baseParam.proxied = form.proxied
@@ -154,6 +220,30 @@ const handleOk = () => {
             <a-form-item label="记录类型">
                 <a-select v-model:value="form.RecordType" @change="handleTypeChange">
                     <a-select-option :disabled="(i === 'MX' && !domainInfo.cloud_info.mx_default)" v-for="(i, index) in RecordTypes"  :key="index" :value="i">{{ i }} {{(i === 'MX' && !domainInfo.cloud_info.mx_default) ? '[暂不支持，陆续开发中]' : ''}}</a-select-option>
+                </a-select>
+            </a-form-item>
+            <a-form-item label="线路类型" v-if="domainInfo.cloud === 'tencent'">
+                <a-select 
+                    v-model:value="form.RecordLineId" 
+                    @change="handleLineChange"
+                    :loading="recordLinesLoading"
+                    placeholder="选择解析线路"
+                    show-search
+                    :filter-option="(input, option) => option.label.toLowerCase().includes(input.toLowerCase())"
+                >
+                    <a-select-opt-group v-for="category in groupedLines" :key="category.category" :label="category.category">
+                        <a-select-option 
+                            v-for="line in category.lines" 
+                            :key="line.id" 
+                            :value="line.id"
+                            :label="line.name"
+                        >
+                            {{ line.name }}
+                            <span v-if="line.lines && line.lines.length > 0" style="color: #999; font-size: 12px;">
+                                (包含: {{ line.lines.slice(0, 3).join(', ') }}{{ line.lines.length > 3 ? '...' : '' }})
+                            </span>
+                        </a-select-option>
+                    </a-select-opt-group>
                 </a-select>
             </a-form-item>
             <a-form-item label="　记录值">

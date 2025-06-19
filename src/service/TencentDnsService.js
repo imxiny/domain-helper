@@ -91,11 +91,18 @@ class TencentDnsService {
             Domain: domain,
             SubDomain: record.name,
             RecordType: record.type,
-            RecordLine: '默认',
+            RecordLine: record.line || '默认',
             Value: record.value,
             Remark: record.remark,
             TTL: record.ttl || 600,
         };
+        
+        // 如果提供了线路ID，使用RecordLineId
+        if (record.lineId && record.lineId !== '0') {
+            formData.RecordLineId = record.lineId;
+            delete formData.RecordLine; // 优先使用LineId
+        }
+        
         if (record.type === "MX") {
             formData.MX = record.mx;
         }
@@ -104,7 +111,6 @@ class TencentDnsService {
     }
 
     async updateRecord(domain, record) {
-
         const oldRecord = (await this.listRecords(domain)).list.find(item => item.RecordId === record.id);
         const action = 'ModifyRecord';
 
@@ -113,11 +119,18 @@ class TencentDnsService {
             SubDomain: record.name,
             RecordId: record.id,
             RecordType: record.type,
-            RecordLine: oldRecord.RecordLine,
+            RecordLine: record.line || oldRecord.RecordLine || '默认',
             Value: record.value,
             Remark: record.remark,
             TTL: record.ttl || 600,
         }
+        
+        // 如果提供了线路ID，使用RecordLineId
+        if (record.lineId && record.lineId !== '0') {
+            formData.RecordLineId = record.lineId;
+            delete formData.RecordLine; // 优先使用LineId
+        }
+        
         if (record.type === "MX") {
             formData.MX = record.mx;
         }
@@ -220,6 +233,94 @@ class TencentDnsService {
             Status: extra.Status ? "ENABLE" : "DISABLE"
         });
         return this._tencentRest(action, payload);
+    }
+
+    // 获取域名的解析线路列表
+    async getRecordLineList(domain) {
+        const action = 'DescribeRecordLineList';
+        // 腾讯云DNSPod API需要DomainGrade参数，使用默认的免费版
+        const payload = JSON.stringify({
+            Domain: domain,
+            DomainGrade: 'DP_FREE'  // 默认使用免费版套餐
+        });
+        return new Promise((resolve, reject) => {
+            this._tencentRest(action, payload).then(r => {
+                // 处理线路数据，转换为前端需要的格式
+                const lineList = [];
+                
+                // 添加默认线路
+                lineList.push({
+                    name: '默认',
+                    id: '0',
+                    category: '基础线路'
+                });
+
+                // 处理线路信息
+                if (r.LineList) {
+                    r.LineList.forEach(line => {
+                        lineList.push({
+                            name: line.Name,
+                            id: line.LineId,
+                            category: '基础线路'
+                        });
+                    });
+                }
+
+                // 处理线路分组信息
+                if (r.LineGroupList) {
+                    r.LineGroupList.forEach(group => {
+                        lineList.push({
+                            name: group.Name,
+                            id: group.LineId,
+                            category: '线路分组',
+                            lines: group.LineList || []
+                        });
+                    });
+                }
+
+                resolve({
+                    count: lineList.length,
+                    list: lineList
+                });
+            }).catch(e => {
+                reject(e);
+            });
+        });
+    }
+
+    // 按分类获取线路列表
+    async getRecordLineCategoryList(domain) {
+        const action = 'DescribeRecordLineCategoryList';
+        // 腾讯云DNSPod API需要DomainGrade参数，使用默认的免费版
+        const payload = JSON.stringify({
+            Domain: domain,
+            DomainGrade: 'DP_FREE'  // 默认使用免费版套餐
+        });
+        return new Promise((resolve, reject) => {
+            this._tencentRest(action, payload).then(r => {
+                // 处理分类线路数据
+                const categoryList = [];
+                
+                if (r.LineList) {
+                    r.LineList.forEach(category => {
+                        categoryList.push({
+                            name: category.LineName,
+                            id: category.LineId,
+                            useful: category.Useful,
+                            grade: category.Grade,
+                            subLines: category.SubGroup || []
+                        });
+                    });
+                }
+
+                resolve({
+                    count: categoryList.length,
+                    list: categoryList
+                });
+            }).catch(e => {
+                reject(e);
+            });
+        });
     }
 }
 

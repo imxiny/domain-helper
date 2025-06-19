@@ -353,6 +353,20 @@ const baseColumns = [
         align: "center",
         width: 76,
     },
+    {
+        title: "线路类型",
+        dataIndex: "RecordLine",
+        key: "RecordLine",
+        align: "center",
+        width: 120,
+        customRender: ({record}) => {
+            // 只有腾讯云才显示线路信息
+            if (nowDomainInfo.value.cloud === 'tencent') {
+                return record.RecordLine || '默认';
+            }
+            return '-';
+        }
+    },
 ];
 
 const actionColumn = {
