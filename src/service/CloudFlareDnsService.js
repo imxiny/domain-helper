@@ -59,12 +59,34 @@ class CloudflareDnsService {
         // 根据doman 获取zoneId
         const {zone_id} = getDomain("cloudflare/" + domain);
 
-        return new Promise((resolve, reject) => {
-            this.cfRest('GET', `/client/v4/zones/${zone_id}/dns_records`).then(response => {
-                if (!response.success) {
-                    reject(new Error(`获取记录时出错: ${response.errors[0].message}`));
+        return new Promise(async (resolve, reject) => {
+            try {
+                let allRecords = [];
+                let page = 1;
+                let totalPages = 1;
+
+                // 循环获取所有页的记录
+                while (page <= totalPages) {
+                    const endpoint = `/client/v4/zones/${zone_id}/dns_records?per_page=100&page=${page}`;
+                    const response = await this.cfRest('GET', endpoint);
+
+                    if (!response.success) {
+                        reject(new Error(`获取记录时出错: ${response.errors[0].message}`));
+                        return;
+                    }
+
+                    // 更新总页数
+                    if (response.result_info) {
+                        totalPages = response.result_info.total_pages;
+                    }
+
+                    // 添加当前页的记录
+                    allRecords = allRecords.concat(response.result);
+                    page++;
                 }
-                const records = response.result.map(record => {
+
+                // 处理所有记录
+                const records = allRecords.map(record => {
                     // 如果 name 是根域名，替换成 @
                     if (record.name === domain) {
                         record.name = '@';
@@ -88,9 +110,9 @@ class CloudflareDnsService {
                     count: records.length,
                     list: records,
                 });
-            }).catch(e => {
+            } catch (e) {
                 reject(e);
-            })
+            }
         })
     }
 
