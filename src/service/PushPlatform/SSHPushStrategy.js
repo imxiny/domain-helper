@@ -2,9 +2,6 @@ import {IPushStrategy} from './IPushStrategy.js';
 import {randomString} from "@/utils/tool";
 
 const NodeSSH = preload.nodeSSH.NodeSSH;
-const path = preload.path;
-const fs = preload.fs;
-const os = preload.os;
 
 export class SSHPushStrategy extends IPushStrategy {
     constructor() {

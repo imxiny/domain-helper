@@ -130,10 +130,6 @@ export class QiniuPushStrategy extends IPushStrategy {
     }
 
     async push(config, certData, oncall = null) {
-
-        console.log( await this.getSSLList(config))
-
-        return false;
         try {
             // 推送证书
             oncall?.('beforePush', {msg: "开始推送证书"});
