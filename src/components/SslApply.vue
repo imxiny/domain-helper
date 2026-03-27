@@ -1,5 +1,5 @@
 <script setup>
-import {computed, ref, reactive, getCurrentInstance, onMounted, h, onBeforeUnmount, onUnmounted} from "vue";
+import {computed, ref, reactive, getCurrentInstance, onMounted, h, onBeforeUnmount} from "vue";
 import {congratulations, getAllDomains, getDomain, getItem, getRootDomain, saveSslInfo} from "@/utils/tool";
 import "loaders.css/loaders.min.css"
 import {message, notification, theme} from "ant-design-vue";
@@ -21,6 +21,11 @@ import {
 
 
 const okText = ref("开始申请")
+const applyTask = reactive({
+    id: 0,
+    canceled: false,
+});
+const ABORT_ERROR_CODE = "APPLY_ABORTED";
 
 onErrorCaptured((err, vm, info) => {
     // 处理错误，比如记录日志、展示通知等
@@ -105,27 +110,28 @@ const getCaExt = (ca) => {
 
 const acmeClientMap = new Map()
 
-const initAcmeClient = async (accountKey = null, accountUrl = null, ca = null) => {
+const initAcmeClient = async (accountKey = null, accountUrl = null, ca = null, email = null) => {
     try {
         const acmeDb = new DbAcmeAccount();
         ca = ca || form.ca;
-        const acmeClientKey = `${ca}_${accountKey}`;
-        if (accountKey && acmeClientMap.has(acmeClientKey)) {
+        const acmeAccount = acmeDb.getAccount(ca, {accountKey, accountUrl});
+        accountKey = accountKey || acmeAccount.accountKey;
+        accountUrl = accountUrl || acmeAccount.accountUrl;
+        const acmeClientKey = `${ca}_${accountUrl || accountKey || "new"}`;
+        if (acmeClientMap.has(acmeClientKey)) {
             return acmeClientMap.get(acmeClientKey);
         }
 
         const acmeClient = new AcmeClient();
-        const acmeAccount = acmeDb.getAccount(ca, {accountKey, accountUrl});
-        accountKey = accountKey || acmeAccount.accountKey;
-        accountUrl = accountUrl || acmeAccount.accountUrl;
 
-        const res = await acmeClient.init(form.email, accountKey, accountUrl, ca, getCaExt(ca));
+        const accountEmail = email || form.email;
+        const res = await acmeClient.init(accountEmail, accountKey, accountUrl, ca, getCaExt(ca));
 
         if (accountKey !== res.accountKey) {
             acmeDb.saveAccount(ca, {accountKey: res.accountKey, accountUrl: res.accountUrl});
         }
 
-        acmeClientMap.set(acmeClientKey, acmeClient);
+        acmeClientMap.set(`${ca}_${res.accountUrl || res.accountKey || "new"}`, acmeClient);
         return acmeClient;
     } catch (error) {
         console.error('Error initializing AcmeClient:', error);
@@ -133,39 +139,127 @@ const initAcmeClient = async (accountKey = null, accountUrl = null, ca = null) =
     }
 };
 
+const beginApplyTask = () => {
+    applyTask.id += 1;
+    applyTask.canceled = false;
+    return applyTask.id;
+};
+
+const createAbortError = () => {
+    const err = new Error("申请任务已停止");
+    err.code = ABORT_ERROR_CODE;
+    return err;
+};
+
+const assertTaskActive = (taskId) => {
+    if (applyTask.canceled || taskId !== applyTask.id) {
+        throw createAbortError();
+    }
+};
+
+const isAbortError = (error) => error?.code === ABORT_ERROR_CODE;
+
+const cancelApplyTask = () => {
+    if (!confirmLoading.value) {
+        return;
+    }
+    applyTask.canceled = true;
+    confirmLoading.value = false;
+    okText.value = "去验证";
+    renderLoging('任务已停止，可在证书管理 > 申请中继续验证', token.value.colorWarning);
+    notification.info({
+        message: '任务已停止',
+        description: '当前申请进度已保留，可稍后继续。',
+        duration: 4
+    });
+};
+
+const removeAcmeDnsRecords = async (sslRecord) => {
+    for (const challenge of sslRecord.challenges) {
+        const rootDomain = getRootDomain(challenge.domain);
+        const account_key = sslRecord.domainCloud?.[rootDomain];
+        if (!account_key) {
+            continue;
+        }
+        const dnsServiceInfo = getItem(account_key);
+        if (!dnsServiceInfo) {
+            continue;
+        }
+        const dnsService = getDnsService(account_key, dnsServiceInfo.cloud_key, dnsServiceInfo.tokens);
+        try {
+            await dnsService.deleteAcmeRecord(rootDomain, challenge.domain);
+        } catch (e) {
+            // 忽略删除失败的错误
+        }
+    }
+};
+
+const normalizeDomainFields = (domainInfo) => {
+    const normalizedSub = (domainInfo.sub || "").trim().toLowerCase();
+    const normalizedDomain = (domainInfo.domain || "").trim().toLowerCase();
+    return {
+        ...domainInfo,
+        sub: normalizedSub === "*." ? "*" : normalizedSub,
+        domain: normalizedDomain
+    };
+};
+
 
 // DNS验证操作
-const verifyDns = async ({sslId, isOld = false, callback = null}) => {
+const verifyDns = async ({sslId, isOld = false, callback = null, taskId = null}) => {
+    const runTaskId = taskId || beginApplyTask();
     // 窗口继续显示
     okText.value = "DNS验证中"
     open.value = true;
     isDoing.value = true;
+    confirmLoading.value = true;
+    assertTaskActive(runTaskId);
     // 此方法支持继续验证
     const sslRecord = utools.dbStorage.getItem(sslId);
     if (!sslRecord) {
         message.error('未找到对应的证书记录');
         open.value = false;
+        confirmLoading.value = false;
         return;
     }
 
     // 如果是二次申请，需要检查是否过期
     // 过期判断
     if (isOld) {
-        const acmeClient = await initAcmeClient(sslRecord.accountKey, sslRecord.accountUrl, sslRecord.ca || "letsencrypt");
-        confirmLoading.value = true;
+        const acmeClient = await initAcmeClient(sslRecord.accountKey, sslRecord.accountUrl, sslRecord.ca || "letsencrypt", sslRecord.email);
         isDoing.value = true;
         steps.value = []
         renderLoging('开始验证DNS记录');
         if ((new Date(sslRecord.expires)).getTime() < Date.now()) {
-            message.error('申请已过期，请删除该记录');
+            message.error('申请已过期，请重新申请证书');
             open.value = false;
+            confirmLoading.value = false;
             return false;
         }
         // 判断实际订单状态
         const {status} = await acmeClient.getOrderStatus(sslRecord.order)
+        if (status === "ready") {
+            renderLoging('订单已处于可签发状态，跳过DNS检测', token.value.colorSuccess);
+            updateSslRecord(sslId, {
+                ...sslRecord,
+                status: SSL_STATUS.DNS_VERIFIED
+            });
+            await acmeDo({
+                sslId,
+                isOld,
+                callback,
+                taskId: runTaskId
+            });
+            return true;
+        }
         if (status !== "pending") {
-            message.error('证书订单状态异常，请删除该记录');
+            notification.error({
+                message: '证书订单状态异常',
+                description: `当前订单状态为 ${status}，建议在证书管理页删除后重新申请。`,
+                duration: 8
+            });
             open.value = false;
+            confirmLoading.value = false;
             return false;
         }
     }
@@ -173,24 +267,29 @@ const verifyDns = async ({sslId, isOld = false, callback = null}) => {
     renderLoging('检测需要一定时间，请耐心等待...', token.value.colorInfo);
     renderLoging('如果DNS检测超时，可前往证书管理页，申请中，继续验证',);
     try {
-        await Promise.all(sslRecord.challenges.map(async item => {
+        for (const item of sslRecord.challenges) {
+            assertTaskActive(runTaskId);
             await checkDnsRecord(item.domain, item.keyAuthorization, 240, 10, sysConfig.ssl.dns_verify, (type, info) => {
                 if (type === "checkDnsRecord") {
 
                 } else if (type === "checkDnsRecord_success") {
                     renderLoging(`${info.domain} acme DNS 记录生效 🎉`, token.value.colorSuccess);
                 }
-            })
-        }))
+            }, () => applyTask.canceled || runTaskId !== applyTask.id);
+        }
     } catch (e) {
+        if (isAbortError(e)) {
+            return false;
+        }
         notification.error({
             message: 'DNS验证失败',
-            description: `${e.toString()}, \n请检查DNS记录是否生效, \n可前往申请列表中继续尝试`,
+            description: `${e.toString()}\n请检查 DNS 记录是否生效，可在证书管理 > 申请中继续重试。`,
             duration: 10
         });
         confirmLoading.value = false;
         return;
     }
+    assertTaskActive(runTaskId);
     updateSslRecord(sslId, {
         ...sslRecord,
         status: SSL_STATUS.DNS_VERIFIED
@@ -202,6 +301,7 @@ const verifyDns = async ({sslId, isOld = false, callback = null}) => {
             sslId,
             isOld,
             callback,
+            taskId: runTaskId
         });
     } else {
         renderLoging('当前为手动验证模式，请手动进行ACME验证');
@@ -214,19 +314,23 @@ const verifyDns = async ({sslId, isOld = false, callback = null}) => {
 
 
 // 申请证书操作
-const acmeDo = async ({sslId, isOld = false, callback = null}) => {
+const acmeDo = async ({sslId, isOld = false, callback = null, taskId = null}) => {
+    const runTaskId = taskId || beginApplyTask();
+    assertTaskActive(runTaskId);
 
     // 此方法支持继续验证
     const sslRecord = utools.dbStorage.getItem(sslId);
     if (!sslRecord) {
         message.error('未找到对应的申请记录');
         open.value = false;
+        confirmLoading.value = false;
         return;
     }
     okText.value = "ACME验证中"
     // 窗口继续显示
     open.value = true;
     isDoing.value = true;
+    confirmLoading.value = true;
     if (isOld) {
         // 来自列表，这里要关闭之前的消息
         steps.value = []
@@ -235,14 +339,15 @@ const acmeDo = async ({sslId, isOld = false, callback = null}) => {
         confirmLoading.value = true;
     }
 
-    const acmeClient = await initAcmeClient(sslRecord.accountKey, sslRecord.accountUrl, sslRecord.ca || "letsencrypt");
+    const acmeClient = await initAcmeClient(sslRecord.accountKey, sslRecord.accountUrl, sslRecord.ca || "letsencrypt", sslRecord.email);
     // 如果是二次申请，需要检查是否过期
     // 过期判断
     let orderStatus = "";
     if (isOld) {
         if ((new Date(sslRecord.expires)).getTime() < Date.now()) {
-            message.error('申请已过期，请删除该记录');
+            message.error('申请已过期，请重新申请证书');
             open.value = false;
+            confirmLoading.value = false;
             return false;
         }
         try {
@@ -253,8 +358,13 @@ const acmeDo = async ({sslId, isOld = false, callback = null}) => {
             orderStatus = status;
             // 续签的证书，如果不超过有效期，订单可能无需验证
             if (!["ready", "pending"].includes(orderStatus)) {
-                message.error('证书订单状态异常，请删除该记录');
+                notification.error({
+                    message: '证书订单状态异常',
+                    description: `当前订单状态为 ${orderStatus}，请在证书管理页重新申请。`,
+                    duration: 8
+                });
                 open.value = false;
+                confirmLoading.value = false;
                 return false;
             }
             renderLoging('订单状态正常', token.value.colorSuccess);
@@ -274,6 +384,7 @@ const acmeDo = async ({sslId, isOld = false, callback = null}) => {
 
         renderLoging('开始 ACME 验证');
         for (const challenge of sslRecord.challenges) {
+            assertTaskActive(runTaskId);
             // 如果已经验证过了，跳过
             if (challenge.status === 'completed') {
                 continue;
@@ -306,10 +417,13 @@ const acmeDo = async ({sslId, isOld = false, callback = null}) => {
 
         // 如果所有挑战都完成，进入签发阶段
         if (sslRecord.challenges.every(c => c.status === 'completed')) {
+            sslRecord.status = SSL_STATUS.CHALLENGE_VERIFIED;
+            updateSslRecord(sslId, sslRecord);
             sslRecord.status = SSL_STATUS.CERT_PENDING;
             updateSslRecord(sslId, sslRecord);
             renderLoging('开始签发证书...');
 
+            assertTaskActive(runTaskId);
             const cert = await acmeClient.finalizeCertificate(
                 sslRecord.order,
                 sslRecord.domains,
@@ -323,23 +437,8 @@ const acmeDo = async ({sslId, isOld = false, callback = null}) => {
 
             // 异步删除DNS记录
             setTimeout(async () => {
-                for (const challenge of sslRecord.challenges) {
-                    const rootDomain = getRootDomain(challenge.domain);
-                    const account_key = sslRecord.domainCloud[rootDomain];
-                    const dnsServiceInfo = getItem(account_key);
-                    const dnsService = getDnsService(account_key, dnsServiceInfo.cloud_key, dnsServiceInfo.tokens);
-                    try {
-                        await dnsService.deleteAcmeRecord(rootDomain, challenge.domain);
-                    } catch (e) {
-                        // 忽略删除失败的错误
-                    }
-                }
+                await removeAcmeDnsRecords(sslRecord);
             }, 1000);
-
-            // 如果申请成功了， 申请中的证书记录改为已签发
-            // sslRecord.status = SSL_STATUS.COMPLETED;
-            // updateSslRecord(sslId, sslRecord);
-            utools.dbStorage.removeItem(sslId)
 
             // 存储签发证书
             cert.validTo = cert.validTo.getTime();
@@ -351,7 +450,16 @@ const acmeDo = async ({sslId, isOld = false, callback = null}) => {
             sslInfo.value = cert;
             // 使用第一个域名作为主域名
             sslKey.value = saveSslInfo(sslRecord.formDomains[0].domain, cert.subdomain, cert);
-            steps.value.push('证书签发成功 🎉');
+            sslRecord.status = SSL_STATUS.COMPLETED;
+            sslRecord.doneTime = Date.now();
+            sslRecord.certId = sslKey.value;
+            sslRecord.logs = steps.value.map((item) => ({
+                msg: item.msg,
+                color: item.color,
+                time: item.time
+            }));
+            updateSslRecord(sslId, sslRecord);
+            renderLoging('证书签发成功 🎉', token.value.colorSuccess);
             open.value = false;
             congratulations();
             successModal.value = true;
@@ -361,21 +469,14 @@ const acmeDo = async ({sslId, isOld = false, callback = null}) => {
         }
 
     } catch (e) {
-        // 删除DNS记录
-        for (const challenge of sslRecord.challenges) {
-            const rootDomain = getRootDomain(challenge.domain);
-            const account_key = sslRecord.domainCloud[rootDomain];
-            const dnsServiceInfo = getItem(account_key);
-            const dnsService = getDnsService(account_key, dnsServiceInfo.cloud_key, dnsServiceInfo.tokens);
-            try {
-                await dnsService.deleteAcmeRecord(rootDomain, challenge.domain);
-            } catch (e) {
-                // 忽略删除失败的错误
-            }
+        if (isAbortError(e)) {
+            return false;
         }
+        // 删除DNS记录
+        await removeAcmeDnsRecords(sslRecord);
         notification.error({
             message: 'SSL证书申请失败',
-            description: e.toString(),
+            description: `${e.toString()}\n你可以在证书管理 > 申请中继续验证，或删除后重建。`,
             duration: 10
         });
         open.value = false;
@@ -413,6 +514,7 @@ const handleOk = async () => {
         return;
     }
 
+    const runTaskId = beginApplyTask();
     steps.value = []
     // 检测邮箱是否合法
     if (!form.email) {
@@ -437,6 +539,8 @@ const handleOk = async () => {
         });
         return;
     }
+
+    formDomains.value = formDomains.value.map(normalizeDomainFields);
 
     // 检查每个域名是否合法
     for (const domainInfo of formDomains.value) {
@@ -480,6 +584,16 @@ const handleOk = async () => {
         }
     }
 
+    const dedupDomainSet = new Set();
+    for (const domainInfo of formDomains.value) {
+        const domainName = domainInfo.sub === "@" ? domainInfo.domain : `${domainInfo.sub}.${domainInfo.domain}`;
+        if (dedupDomainSet.has(domainName)) {
+            message.error(`域名 ${domainName} 重复，请删除重复项`);
+            return;
+        }
+        dedupDomainSet.add(domainName);
+    }
+
     utools.dbStorage.setItem("user_email", form.email)
     confirmLoading.value = true;
 
@@ -489,10 +603,12 @@ const handleOk = async () => {
     );
 
 
-    steps.value = [`开始为 ${targetDomains.join(', ')} 申请ssl证书`]
+    steps.value = []
+    renderLoging(`开始为 ${targetDomains.join(', ')} 申请ssl证书`);
     isDoing.value = true;
     try {
-        const acmeClient = await initAcmeClient();
+        assertTaskActive(runTaskId);
+        const acmeClient = await initAcmeClient(null, null, null, form.email);
         const initResult = await acmeClient.initOrder(targetDomains);
         // 创建DNS记录
 
@@ -500,13 +616,20 @@ const handleOk = async () => {
         let domainCloud = {}; // 记录根域名即可
         try {
             for (const challenge of initResult.challenges) {
+                assertTaskActive(runTaskId);
                 const rootDomain = getRootDomain(challenge.domain);
                 const domainInfo = formDomains.value.find(d => d.domain === rootDomain);
+                if (!domainInfo) {
+                    throw new Error(`${challenge.domain} 未找到对应的根域名配置`);
+                }
                 const {account_key} = getDomain(`${domainInfo.cloud}/${rootDomain}`);
                 if (!account_key) {
-                    throw new Error(`未找到对应的云平台账号`);
+                    throw new Error(`${rootDomain} 未找到可用的云平台账号，请先在域名管理中绑定`);
                 }
                 const dnsServiceInfo = getItem(account_key);
+                if (!dnsServiceInfo) {
+                    throw new Error(`${rootDomain} 云平台账号信息不存在，请重新配置账号`);
+                }
                 const dnsService = getDnsService(account_key, dnsServiceInfo.cloud_key, dnsServiceInfo.tokens);
 
                 domainCloud[rootDomain] = account_key;
@@ -527,8 +650,18 @@ const handleOk = async () => {
             for (const challenge of initResult.challenges) {
                 const rootDomain = getRootDomain(challenge.domain);
                 const domainInfo = formDomains.value.find(d => d.domain === rootDomain);
-                const {account_key} = getDomain(`${domainInfo.cloud}/${rootDomain}`);
+                if (!domainInfo) {
+                    continue;
+                }
+                const domainRef = getDomain(`${domainInfo.cloud}/${rootDomain}`);
+                const account_key = domainRef?.account_key;
+                if (!account_key) {
+                    continue;
+                }
                 const dnsServiceInfo = getItem(account_key);
+                if (!dnsServiceInfo) {
+                    continue;
+                }
                 const dnsService = getDnsService(account_key, dnsServiceInfo.cloud_key, dnsServiceInfo.tokens);
                 try {
                     await dnsService.deleteAcmeRecord(rootDomain, challenge.domain);
@@ -575,13 +708,17 @@ const handleOk = async () => {
         updateSslRecord(recordId, sslRecord);
         await verifyDns({
             sslId: recordId,
-            isOld: false
+            isOld: false,
+            taskId: runTaskId
         });
     } catch (e) {
+        if (isAbortError(e)) {
+            return;
+        }
         confirmLoading.value = false;
         notification.error({
             message: 'SSL证书申请失败',
-            description: e.toString(),
+            description: `${e.toString()}\n可在证书管理页查看进度并继续操作。`,
             duration: 10
         });
         console.error(e);
@@ -592,11 +729,11 @@ const handleOk = async () => {
 
 const steps = ref([])
 const renderLoging = (msg, color = null) => {
-    if (color === null) {
-        steps.value.push(msg);
-        return false;
-    }
-    steps.value.push(`<span style="color: ${color || token.value.colorInfo}">${msg}</span>`);
+    steps.value.push({
+        msg,
+        color: color || token.value.colorText,
+        time: dayjs().format('HH:mm:ss')
+    });
 }
 
 const renewCsr = reactive({csr: "", key: ""})
@@ -667,7 +804,6 @@ const pushSSL = () => {
 }
 import {SettingOutlined} from '@ant-design/icons-vue';
 import dayjs from "dayjs";
-import {httpGet} from "@/utils/http";
 import {checkDnsRecord} from "@/utils/checkDnsRecord";
 import {DbAcmeAccount} from "@/utils/dbtool/DbAcmeAccount";
 
@@ -819,10 +955,22 @@ const targetDomains = computed(() => {
                 </a-form-item>
             </a-form>
             <div v-else>
-                <p v-for="(i , index) in steps" :key="index" v-html="i"></p>
+                <a-steps direction="vertical" size="small" :current="steps.length ? steps.length - 1 : 0">
+                    <a-step v-for="(step, index) in steps" :key="index">
+                        <template #title>
+                            <span :style="{ color: step.color }">{{ step.msg }}</span>
+                        </template>
+                        <template #description>
+                            <span style="font-size: 12px; color: #999;">{{ step.time }}</span>
+                        </template>
+                    </a-step>
+                </a-steps>
                 <div style="width: 100%;text-align: center;padding-top: 20px;" v-if="confirmLoading">
                     <a-spin :indicator="indicator" tip="正在申请中，请勿退出程序"/>
                 </div>
+                <a-flex v-if="confirmLoading" style="margin-top: 16px;" justify="center">
+                    <a-button danger @click="cancelApplyTask">停止本次任务</a-button>
+                </a-flex>
             </div>
         </a-modal>
         <a-modal v-model:open="successModal" :destroy-on-close="true" :footer="false" width="400px">

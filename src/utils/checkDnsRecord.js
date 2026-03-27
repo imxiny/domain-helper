@@ -9,7 +9,7 @@ const WAY_MAP = {
     one: "https://1.1.1.1/dns-query",
 }
 
-export async function checkDnsRecord(domain, expectedValue, timeout = 60, interval = 5, way = "one", callback = null) {
+export async function checkDnsRecord(domain, expectedValue, timeout = 60, interval = 5, way = "one", callback = null, shouldAbort = null) {
     timeout *= 1000
     interval *= 1000
     const originalDomain = domain;
@@ -24,6 +24,11 @@ export async function checkDnsRecord(domain, expectedValue, timeout = 60, interv
     let lastError = null;
     let flag = false;
     while (Date.now() < endTime) {
+        if (shouldAbort && shouldAbort()) {
+            const err = new Error('申请任务已停止');
+            err.code = 'APPLY_ABORTED';
+            throw err;
+        }
         times++;
         callback && callback('checkDnsRecord', {
             msg: `${originalDomain} 第${times}次检查 DNS 记录...`,
@@ -48,6 +53,11 @@ export async function checkDnsRecord(domain, expectedValue, timeout = 60, interv
                 domain: domain
             });
             return flag;
+        }
+        if (shouldAbort && shouldAbort()) {
+            const err = new Error('申请任务已停止');
+            err.code = 'APPLY_ABORTED';
+            throw err;
         }
         await new Promise(resolve => setTimeout(resolve, interval));
     }

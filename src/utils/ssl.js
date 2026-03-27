@@ -22,15 +22,30 @@ class AcmeClient {
     }
 
     async init(email, accountKey, accountUrl, ca, ext) {
+        this.email = email;
         this.ca = ca;
         if (ext?.proxy) {
-            // 拆解代理地址
-            const [host, port] = ext?.proxy.split(":");
-            acme.axios.defaults.proxy = {
-                host: host,
-                port: port,
-                protocol: 'http'
+            let host = null;
+            let port = null;
+            let protocol = 'http';
+            try {
+                const proxyUrl = ext.proxy.includes('://') ? ext.proxy : `http://${ext.proxy}`;
+                const parsed = new URL(proxyUrl);
+                host = parsed.hostname;
+                port = parsed.port ? Number(parsed.port) : 80;
+                protocol = parsed.protocol.replace(':', '') || 'http';
+            } catch (e) {
+                const [rawHost, rawPort] = ext.proxy.split(":");
+                host = rawHost;
+                port = Number(rawPort);
             }
+            acme.axios.defaults.proxy = {
+                host,
+                port,
+                protocol
+            };
+        } else {
+            acme.axios.defaults.proxy = false;
         }
         try {
 

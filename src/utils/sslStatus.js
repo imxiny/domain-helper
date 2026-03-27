@@ -62,5 +62,5 @@ export const getAllDoingSslRecord = () => {
             _id: item._id,
             ...item.value
         };
-    }).reverse()
+    }).filter(item => item.status !== SSL_STATUS.COMPLETED).reverse()
 }
