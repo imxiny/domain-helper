@@ -55,14 +55,34 @@ class TencentDnsService {
         }
     }
 
-    async listRecords(domain) {
+    supportsRecordKeywordSearch = true;
+
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 3000), 10), 1);
+        const keyword = (options.keyword || "").toString().trim();
         const action = 'DescribeRecordList';
-        const payload = JSON.stringify({Domain: domain, Limit: 3000});
+        const params = {
+            Domain: domain,
+            Limit: pageSize,
+            Offset: (page - 1) * pageSize,
+        };
+        if (keyword) {
+            params.Keyword = keyword;
+        }
+        const payload = JSON.stringify(params);
         return new Promise((resolve, reject) => {
             this._tencentRest(action, payload).then(r => {
+                const count = r.RecordCountInfo?.TotalCount || 0;
+                const list = r.RecordList || [];
                 let res = {
-                    count: r.RecordCountInfo.TotalCount,
-                    list: r.RecordList.map(item => {
+                    count,
+                    page,
+                    pageSize,
+                    hasMore: page * pageSize < count,
+                    searchedAll: true,
+                    list: list.map(item => {
                         return {
                             RecordId: item.RecordId,
                             Name: item.Name,

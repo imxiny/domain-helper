@@ -37,13 +37,25 @@ class AwsDnsService {
         }))).filter(zone => zone !== null);
     }
 
-    async listRecords(domain) {
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 500), 10), 1);
         const {zone_id} = getDomain("aws/" + domain);
         const response = preload.xml2Json(await this._awsRest('GET', `2013-04-01${zone_id}/rrset`, "maxitems=500"), ['ResourceRecordSet'])
         let records = response.ListResourceRecordSetsResponse.ResourceRecordSets.ResourceRecordSet;
+        if (!Array.isArray(records)) {
+            records = records ? [records] : [];
+        }
+        const start = (page - 1) * pageSize;
+        const pageRecords = records.slice(start, start + pageSize);
         return {
             count: records.length,
-            list: records.map(record => {
+            page,
+            pageSize,
+            hasMore: start + pageRecords.length < records.length,
+            searchedAll: true,
+            list: pageRecords.map(record => {
                 const value = record.ResourceRecords.ResourceRecord.Value ? record.ResourceRecords.ResourceRecord.Value : record.ResourceRecords.ResourceRecord.map(item => item.Value).join('\n');
                 return {
                     RecordId: record.Name + "##" + record.Type + "##" + record.TTL + "##" + value,

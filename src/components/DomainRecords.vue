@@ -36,6 +36,7 @@ import {
 } from "@/utils/sslMonitor";
 import router from "@/router";
 import {ArrayUtils} from "@/utils/ArrayUtils";
+import {debounce} from 'lodash-es';
 
 const themeStore = useThemeStore();
 
@@ -110,6 +111,22 @@ const nowDomainInfo = ref({
 const records = ref([]);
 const count = ref(0);
 const loading = ref(false);
+const pagination = reactive({
+    current: 1,
+    pageSize: 20,
+    total: 0,
+    showSizeChanger: true,
+    pageSizeOptions: ["20", "50", "100"],
+    showTotal: (total) => `共 ${total} 条`,
+});
+const tablePagination = computed(() => ({
+    ...pagination,
+    current: pagination.current,
+    pageSize: pagination.pageSize,
+    total: pagination.total,
+}));
+const requestKeyword = ref("");
+let recordsRequestId = 0;
 
 // 添加计算属性来统计不同类型的记录数量
 const recordTypeCounts = computed(() => {
@@ -127,53 +144,72 @@ const getAllMonitorRecords = () => {
     allMonitorRecords.value = getAllSslMonitor();
 };
 
-const refreshRecords = () => {
+const enrichRecords = (list) => {
+    // 获取当前域名下的所有ssl证书
+    let allSsl = getAllSslInfo().filter((i) =>
+        i.subdomain.includes(nowDomainInfo.value.domain)
+    );
+    // 为当前页附加 ssl 证书信息，只有 A AAAA CNAME 类型的记录才有证书
+    const now = Date.now();
+    return (list || []).map((i) => {
+        let fulldomain =
+            i.Name === "@"
+                ? nowDomainInfo.value.domain
+                : i.Name + "." + nowDomainInfo.value.domain;
+        if (["A", "AAAA", "CNAME"].includes(i.Type)) {
+            i.ssl = allSsl.find((j) => j.subdomain.includes(fulldomain));
+            if (i.ssl) {
+                i.ssl.expired = Math.floor(
+                    (i.ssl.validTo - now) / 1000 / 60 / 60 / 24
+                );
+            }
+            i.monitor = allMonitorRecords.value.find((j) => j.uri === fulldomain);
+            if (i.monitor) {
+                i.monitor.expired = Math.floor(
+                    (i.monitor.expire_time - now) / 1000 / 60 / 60 / 24
+                );
+            }
+        }
+        return i;
+    });
+};
+
+const refreshRecords = (options = {}) => {
     selectedRecords.value = [];
+    selectedRowKeys.value = [];
     getAllMonitorRecords();
+    if (options.resetPage) {
+        pagination.current = 1;
+    }
     const dbsService = getDnsService(
         nowDomainInfo.value.account_key,
         nowDomainInfo.value.cloud,
         nowDomainInfo.value.account_info.tokens
     );
+    const requestId = ++recordsRequestId;
     loading.value = true;
     dbsService
-        .listRecords(nowDomainInfo.value.domain)
+        .listRecords(nowDomainInfo.value.domain, {
+            page: pagination.current,
+            pageSize: pagination.pageSize,
+            keyword: requestKeyword.value,
+        })
         .then((r) => {
-            console.log(r);
+            if (requestId !== recordsRequestId) {
+                return;
+            }
             count.value = r.count;
-            //records.value = r.list
-
-            // 获取当前域名下的所有ssl证书
-            let allSsl = getAllSslInfo().filter((i) =>
-                i.subdomain.includes(nowDomainInfo.value.domain)
-            );
-            // 为 r.list 附加 ssl 证书信息 只有 A AAAA CNAME 类型的记录才有证书
-            const now = Date.now();
-            records.value = r.list.map((i) => {
-                let fulldomain =
-                    i.Name === "@"
-                        ? nowDomainInfo.value.domain
-                        : i.Name + "." + nowDomainInfo.value.domain;
-                if (["A", "AAAA", "CNAME"].includes(i.Type)) {
-                    i.ssl = allSsl.find((j) => j.subdomain.includes(fulldomain));
-                    // 计算证书有效期
-                    if (i.ssl) {
-                        i.ssl.expired = Math.floor(
-                            (i.ssl.validTo - now) / 1000 / 60 / 60 / 24
-                        );
-                    }
-                    i.monitor = allMonitorRecords.value.find((j) => j.uri === fulldomain);
-                    // 计算监控证书有效期
-                    if (i.monitor) {
-                        i.monitor.expired = Math.floor(
-                            (i.monitor.expire_time - now) / 1000 / 60 / 60 / 24
-                        );
-                    }
-                }
-                return i;
-            });
+            pagination.total = r.count;
+            records.value = enrichRecords(r.list);
+            if (records.value.length === 0 && pagination.current > 1 && pagination.total > 0) {
+                pagination.current -= 1;
+                refreshRecords();
+            }
         })
         .catch((e) => {
+            if (requestId !== recordsRequestId) {
+                return;
+            }
             console.log(e)
             notification.error({
                 message: "获取解析记录失败",
@@ -183,12 +219,16 @@ const refreshRecords = () => {
             records.value = [];
         })
         .finally(() => {
-            loading.value = false;
+            if (requestId === recordsRequestId) {
+                loading.value = false;
+            }
         });
 };
 
 const initRecords = (domainInfo) => {
     nowDomainInfo.value = domainInfo;
+    pagination.current = 1;
+    requestKeyword.value = searchForm.keyword.toString().trim();
     refreshAllDomains();
     refreshRecords();
 };
@@ -269,7 +309,7 @@ const deleteRecordDo = () => {
         )
         .then((r) => {
             message.success(`记录 ${deleteNowRecord.Name} 删除成功`);
-            initRecords(nowDomainInfo.value);
+            refreshRecords();
         })
         .catch((e) => {
             notification.error({
@@ -302,14 +342,11 @@ const calcRecords = computed(() => {
     }
 
     let filteredRecords = (records.value || []).filter((item) => {
-        const matchKeyword =
-            item.Name.toLowerCase().includes(key) ||
-            item.Value.toLowerCase().includes(key);
         const matchType = !searchForm.type || item.Type === searchForm.type;
         const matchMonitoring = !searchForm.isMonitoring || item.monitor;
         const matchStatus =
             !searchForm.status || item.Status === (searchForm.status === "true");
-        return matchKeyword && matchType && matchMonitoring && matchStatus;
+        return matchType && matchMonitoring && matchStatus;
     });
 
     if (!key) {
@@ -377,7 +414,6 @@ const actionColumn = {
     // fixed: 'right',
     width: 110,
 };
-import {debounce} from 'lodash-es';
 
 const columns = computed(() => {
     const base = baseColumns;
@@ -390,7 +426,7 @@ const height = ref(0);
 let resizeObserver = null;
 const updateHeight = debounce(() => {
     if (xbody.value) {
-        height.value = xbody.value.clientHeight - 56;
+        height.value = Math.max(xbody.value.clientHeight - 116, 180);
     }
 }, 100);
 onMounted(() => {
@@ -429,8 +465,25 @@ const selectDomain = (value) => {
     const domain = allDomains.value.find((i) => i._id === value);
     if (domain) {
         nowDomainInfo.value = domain;
-        refreshRecords();
+        refreshRecords({resetPage: true});
     }
+};
+
+const onTableChange = (nextPagination) => {
+    pagination.current = parseInt(nextPagination.current || 1, 10);
+    pagination.pageSize = parseInt(nextPagination.pageSize || 20, 10);
+    refreshRecords();
+};
+
+const applyKeywordSearch = debounce(() => {
+    requestKeyword.value = searchForm.keyword.toString().trim();
+    refreshRecords({resetPage: true});
+}, 350);
+
+const onKeywordSearch = () => {
+    applyKeywordSearch.cancel();
+    requestKeyword.value = searchForm.keyword.toString().trim();
+    refreshRecords({resetPage: true});
 };
 
 const changeStatus = (value, e, record) => {
@@ -1032,7 +1085,7 @@ const getMonitorColor = (days) => {
             <a-space :size="12">
                 <a-button
                     :icon="h(SyncOutlined)"
-                    @click="initRecords(nowDomainInfo)"
+                    @click="refreshRecords()"
                 ></a-button>
                 <a-button type="primary" @click="handleBack">
                     <template #icon>
@@ -1074,6 +1127,8 @@ const getMonitorColor = (days) => {
                     v-model:value="searchForm.keyword"
                     placeholder="输入关键字检索"
                     style="width: 160px"
+                    @change="applyKeywordSearch"
+                    @search="onKeywordSearch"
                 ></a-input-search>
                 <a-checkbox v-model:checked="searchForm.isMonitoring">
                     监控中
@@ -1135,8 +1190,9 @@ const getMonitorColor = (days) => {
                 :row-selection="rowSelection"
                 :locale="{ emptyText: '暂无解析记录' }"
                 sticky
-                :scroll="{ y: 'calc(100vh - 172px)' }"
-                :pagination="false"
+                :scroll="{ y: height }"
+                :pagination="tablePagination"
+                @change="onTableChange"
                 :row-key="(record) => record.RecordId"
                 :loading="{
           spinning: loading,
@@ -1288,8 +1344,10 @@ const getMonitorColor = (days) => {
 .box_record {
     box-sizing: border-box;
     height: 100%;
-    overflow: auto;
+    overflow: hidden;
     position: relative;
+    display: flex;
+    flex-direction: column;
 
     .h_header {
         box-sizing: border-box;
@@ -1309,7 +1367,37 @@ const getMonitorColor = (days) => {
 
     .body {
         box-sizing: border-box;
-        height: calc(100% - 117px);
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        padding-bottom: 6px;
+    }
+
+    :deep(.ant-table-wrapper),
+    :deep(.ant-spin-nested-loading),
+    :deep(.ant-spin-container) {
+        height: 100%;
+    }
+
+    :deep(.ant-spin-container) {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    :deep(.ant-table) {
+        flex: 1;
+        min-height: 0;
+    }
+
+    :deep(.ant-table-container) {
+        height: 100%;
+    }
+
+    :deep(.ant-pagination) {
+        flex: 0 0 auto;
+        margin: 12px 0 0;
+        padding: 0 16px;
     }
 
     :deep(.ant-table-body) {

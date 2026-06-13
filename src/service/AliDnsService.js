@@ -101,21 +101,33 @@ class AliDnsService {
         return await this._aliRest(action, payload);
     }
 
-    async listRecords(domain) {
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 500), 10), 1);
         const action = 'DescribeDomainRecords';
-        const payload = this._buildQuery(action, {DomainName: domain, PageSize: 500});
+        const params = {DomainName: domain, PageSize: pageSize, PageNumber: page};
+        const payload = this._buildQuery(action, params);
         return new Promise((resolve, reject) => {
             this._aliRest(action, payload).then(res => {
                 if (res.TotalCount === 0) {
                     resolve({
                         count: 0,
-                        list: []
+                        list: [],
+                        page,
+                        pageSize,
+                        hasMore: false,
+                        searchedAll: true,
                     });
                 }
-                console.log(res.DomainRecords.Record)
+                const list = res.DomainRecords.Record || [];
                 resolve({
                     count: res.TotalCount,
-                    list: res.DomainRecords.Record.map(item => {
+                    page,
+                    pageSize,
+                    hasMore: page * pageSize < res.TotalCount,
+                    searchedAll: true,
+                    list: list.map(item => {
                         return {
                             RecordId: item.RecordId,
                             Name: item.RR,
