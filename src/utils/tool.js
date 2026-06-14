@@ -143,6 +143,8 @@ const prefix = "cloud"
 
 const domainPrefix = "xdomain"
 
+const privateZonePrefix = "private_zone"
+
 
 const accountPrefix = "account"
 
@@ -206,6 +208,48 @@ export function saveDomain(domain, cloud, extra = {}) {
     utools.dbStorage.setItem(dataKey, {
         domain, cloud, ...extra
     });
+}
+
+export function getPrivateZoneKey(zone) {
+    return `${privateZonePrefix}/${zone.cloud}/${zone.account_key}/${zone.zone_id}`;
+}
+
+export function savePrivateZone(zone) {
+    if (!zone.zone_id || !zone.cloud || !zone.account_key) {
+        throw new Error("私有解析Zone缺少必要标识");
+    }
+    utools.dbStorage.setItem(getPrivateZoneKey(zone), zone);
+    return getPrivateZoneKey(zone);
+}
+
+export function deletePrivateZoneDb(zone) {
+    utools.dbStorage.removeItem(getPrivateZoneKey(zone));
+}
+
+export function getAllPrivateZones() {
+    const accounts = getAllAccount();
+    const accountMap = accounts.reduce((acc, item) => {
+        acc[item._id] = item;
+        return acc;
+    }, {});
+    return utools.db.allDocs(privateZonePrefix).map(item => {
+        return {
+            _id: item._id,
+            ...item.value
+        };
+    }).map(item => {
+        return {
+            ...item,
+            cloud_info: getDomainBaseCloud(item.cloud),
+            account_info: accountMap[item.account_key]
+        };
+    }).filter(item => item.account_info).sort((a, b) => {
+        return (a.zone_name || "").localeCompare(b.zone_name || "");
+    });
+}
+
+export function getPrivateZone(cloud, accountKey, zoneId) {
+    return utools.dbStorage.getItem(`${privateZonePrefix}/${cloud}/${accountKey}/${zoneId}`);
 }
 
 export function deleteDomainDb(cloud, domain) {
