@@ -51,25 +51,39 @@ class SpaceshipDnsService {
         });
     }
 
-    async listRecords(domain) {
-        let pageSize = 500, offset = 0;
-        let records = [];
-        while (true) {
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 500), 10), 1);
+        let offset = (page - 1) * pageSize;
+        let total = 0;
+        let items = [];
+        if (hasOptions) {
             const action = `api/v1/dns/records/${domain}?take=${pageSize}&skip=${offset}`;
             const res = await this._spaceshopRest(action, 'GET');
-            const {total, items} = res;
-            if (total === 0) {
-                break;
+            total = res.total || 0;
+            items = res.items || [];
+        } else {
+            offset = 0;
+            while (true) {
+                const action = `api/v1/dns/records/${domain}?take=${pageSize}&skip=${offset}`;
+                const res = await this._spaceshopRest(action, 'GET');
+                total = res.total || 0;
+                items = items.concat(res.items || []);
+                if (total === 0 || total < pageSize + offset) {
+                    break;
+                }
+                offset += pageSize;
             }
-            records = records.concat(items);
-            if (total < (pageSize + offset)) {
-                break;
-            }
-            offset += pageSize;
+            offset = 0;
         }
         return {
-            count: records.length,
-            list: records.map(item => {
+            count: hasOptions ? total : items.length,
+            page,
+            pageSize,
+            hasMore: hasOptions ? offset + items.length < total : false,
+            searchedAll: !hasOptions,
+            list: items.map(item => {
                 return {
                     RecordId: `${item.type}##${item.name}`,
                     Name: item.name,

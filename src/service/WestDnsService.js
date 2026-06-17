@@ -36,16 +36,23 @@ class WestDnsService {
         });
     }
 
-    async listRecords(domain) {
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 1000), 10), 1);
         const payload = {
             act: 'getdnsrecord',
-            page: 1,
-            limit: 1000,
+            page,
+            limit: pageSize,
             domain,
         }
         const {data} = await this._westRest('GET', "domain", payload);
         return {
             count: data.total,
+            page,
+            pageSize,
+            hasMore: page * pageSize < data.total,
+            searchedAll: false,
             list: data.items.map(item => {
                 return {
                     RecordId: item.id,

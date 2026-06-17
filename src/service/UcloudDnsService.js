@@ -79,19 +79,32 @@ class UcloudDnsService {
         throw new Error(data.Message);
     }
 
-    async listRecords(domain) {
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 5000), 10), 1);
         const {Data} = await this._ucloudRest('POST', "UdnrDomainDNSQuery", {
             "Dn": domain
         });
         if (Data === null) {
             return {
                 count: 0,
-                list: []
+                list: [],
+                page,
+                pageSize,
+                hasMore: false,
+                searchedAll: true,
             }
         }
+        const start = (page - 1) * pageSize;
+        const pageData = Data.slice(start, start + pageSize);
         return {
             count:  Data.length,
-            list: Data.map(item => {
+            page,
+            pageSize,
+            hasMore: start + pageData.length < Data.length,
+            searchedAll: true,
+            list: pageData.map(item => {
                 // 解析记录清空 域名
                 item.RecordName = item.RecordName.replace(`.${domain}`, "");
                 return {

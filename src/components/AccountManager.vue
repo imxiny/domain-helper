@@ -1,15 +1,18 @@
 <script setup>
-import {CloudDownloadOutlined, DeleteOutlined, InfoCircleOutlined} from "@ant-design/icons-vue";
+import {CloudDownloadOutlined, DeleteOutlined, InfoCircleOutlined, PartitionOutlined} from "@ant-design/icons-vue";
 import {computed, getCurrentInstance, h, ref, reactive} from "vue";
 import {Modal, message, notification, theme} from 'ant-design-vue';
 import {
     getAllAccount,
     getAllDomains,
+    getAllPrivateZones,
     getDomainBaseCloud,
     openDoc,
+    savePrivateZone,
     saveSettingDb
 } from "@/utils/tool";
 import {getDnsService} from "@/service/DnsService";
+import {getPrivateDnsService} from "@/service/PrivateDnsService";
 import {cloudsData} from "@/utils/data";
 import {afterCommon} from "@/service/afterSaveSetting";
 
@@ -164,15 +167,19 @@ const deleteAccount = (item) => {
 
 const deleteAccountDo = (item) => {
     let bindDomains = getAllDomains().filter(f => f.account_key === item._id);
-    if (bindDomains.length > 0) {
+    let bindPrivateZones = getAllPrivateZones().filter(f => f.account_key === item._id);
+    if (bindDomains.length > 0 || bindPrivateZones.length > 0) {
         let vnodes = [];
         bindDomains.forEach(item => {
             vnodes.push(h('div', null, item.domain));
         });
+        bindPrivateZones.forEach(item => {
+            vnodes.push(h('div', null, `私有解析: ${item.zone_name}`));
+        });
         notification.error({
             message: '删除失败',
             description: h('div', null, [
-                h('div', null, '请先解绑域名，已绑定域名:'),
+                h('div', null, '请先解绑域名或私有 Zone，已绑定资源:'),
             ].concat(vnodes)),
         });
         return false;
@@ -192,6 +199,33 @@ const downloadDomains = (item) => {
     }, () => {
         proxy.$eventBus.emit("refresh-domain-list");
     });
+}
+
+const supportPrivateDns = (item) => ['ali', 'tencent', 'aws', 'huawei', 'volcengine'].includes(item.cloud_key);
+
+const downloadPrivateZones = async (item) => {
+    const hide = message.loading('正在拉取私有 Zone...', 0);
+    try {
+        const dns = getPrivateDnsService(item._id, item.cloud_key, item.tokens, true);
+        const zones = await dns.listZones();
+        zones.forEach(zone => {
+            savePrivateZone({
+                ...zone,
+                cloud: item.cloud_key,
+                account_key: item._id,
+                vpc_bindings: zone.vpc_bindings || [],
+            });
+        });
+        message.success(`成功拉取 ${zones.length} 个私有 Zone`);
+    } catch (e) {
+        notification.error({
+            message: '拉取私有 Zone 失败',
+            description: e.toString(),
+            duration: 10
+        });
+    } finally {
+        hide();
+    }
 }
 
 // 确保 HTML 内容安全
@@ -245,6 +279,10 @@ const safeDesc = computed(() => {
                             <a-tooltip title="从平台拉取域名">
                                 <a-button @click.stop="downloadDomains(i)" type="link"
                                           :icon="h(CloudDownloadOutlined)"></a-button>
+                            </a-tooltip>
+                            <a-tooltip v-if="supportPrivateDns(i)" title="拉取私有 Zone">
+                                <a-button @click.stop="downloadPrivateZones(i)" type="link"
+                                          :icon="h(PartitionOutlined)"></a-button>
                             </a-tooltip>
                             <a-button danger @click.stop="deleteAccount(i)" type="link"
                                       :icon="h(DeleteOutlined)"></a-button>

@@ -54,39 +54,70 @@ class CloudflareDnsService {
         })
     }
 
-    async listRecords(domain) {
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 100), 10), 1);
 
         // 根据doman 获取zoneId
         const {zone_id} = getDomain("cloudflare/" + domain);
 
         return new Promise(async (resolve, reject) => {
             try {
-                let allRecords = [];
-                let page = 1;
-                let totalPages = 1;
-
-                // 循环获取所有页的记录
-                while (page <= totalPages) {
-                    const endpoint = `/client/v4/zones/${zone_id}/dns_records?per_page=100&page=${page}`;
-                    const response = await this.cfRest('GET', endpoint);
-
-                    if (!response.success) {
-                        reject(new Error(`获取记录时出错: ${response.errors[0].message}`));
-                        return;
+                if (!hasOptions) {
+                    let allRecords = [];
+                    let currentPage = 1;
+                    let totalPages = 1;
+                    while (currentPage <= totalPages) {
+                        const endpoint = `/client/v4/zones/${zone_id}/dns_records?per_page=${pageSize}&page=${currentPage}`;
+                        const response = await this.cfRest('GET', endpoint);
+                        if (!response.success) {
+                            reject(new Error(`获取记录时出错: ${response.errors[0].message}`));
+                            return;
+                        }
+                        totalPages = response.result_info?.total_pages || 1;
+                        allRecords = allRecords.concat(response.result || []);
+                        currentPage++;
                     }
+                    const records = allRecords.map(record => {
+                        if (record.name === domain) {
+                            record.name = '@';
+                        }
+                        if (record.name.endsWith(`.${domain}`)) {
+                            record.name = record.name.slice(0, -domain.length - 1);
+                        }
+                        return {
+                            RecordId: record.id,
+                            Name: record.name,
+                            Value: record.content,
+                            Type: record.type,
+                            TTL: record.ttl,
+                            MX: record.priority,
+                            ProxyStatus: record.proxied,
+                            Remark: record.comment
+                        }
+                    });
+                    resolve({
+                        count: records.length,
+                        page,
+                        pageSize,
+                        hasMore: false,
+                        searchedAll: true,
+                        list: records,
+                    });
+                    return;
+                }
 
-                    // 更新总页数
-                    if (response.result_info) {
-                        totalPages = response.result_info.total_pages;
-                    }
+                const endpoint = `/client/v4/zones/${zone_id}/dns_records?per_page=${pageSize}&page=${page}`;
+                const response = await this.cfRest('GET', endpoint);
 
-                    // 添加当前页的记录
-                    allRecords = allRecords.concat(response.result);
-                    page++;
+                if (!response.success) {
+                    reject(new Error(`获取记录时出错: ${response.errors[0].message}`));
+                    return;
                 }
 
                 // 处理所有记录
-                const records = allRecords.map(record => {
+                const records = (response.result || []).map(record => {
                     // 如果 name 是根域名，替换成 @
                     if (record.name === domain) {
                         record.name = '@';
@@ -107,7 +138,11 @@ class CloudflareDnsService {
                     }
                 })
                 resolve({
-                    count: records.length,
+                    count: response.result_info?.total_count || records.length,
+                    page,
+                    pageSize,
+                    hasMore: page < (response.result_info?.total_pages || 1),
+                    searchedAll: false,
                     list: records,
                 });
             } catch (e) {

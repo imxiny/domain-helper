@@ -97,6 +97,52 @@ function isValidHostname(hostname) {
     return true;
 }
 
+function normalizeRecordListOptions(options = {}) {
+    const paged = Object.prototype.hasOwnProperty.call(options, "page") ||
+        Object.prototype.hasOwnProperty.call(options, "pageSize") ||
+        Object.prototype.hasOwnProperty.call(options, "keyword");
+    const page = Math.max(parseInt(options.page || 1, 10), 1);
+    const pageSize = paged
+        ? ([20, 50, 100].includes(parseInt(options.pageSize, 10))
+            ? parseInt(options.pageSize, 10)
+            : Math.max(parseInt(options.pageSize || 20, 10), 1))
+        : 5000;
+    return {
+        paged,
+        page,
+        pageSize,
+        keyword: (options.keyword || "").toString().trim(),
+    };
+}
+
+function recordMatchesKeyword(record, keyword) {
+    if (!keyword) {
+        return true;
+    }
+    const key = keyword.toLowerCase();
+    return [record.Name, record.Value].some(value =>
+        (value || "").toString().toLowerCase().includes(key)
+    );
+}
+
+function sortRecords(list) {
+    return (list || []).sort((a, b) => {
+        if (a.Type < b.Type) {
+            return -1;
+        } else if (a.Type > b.Type) {
+            return 1;
+        } else {
+            if (a.Name < b.Name) {
+                return -1;
+            } else if (a.Name > b.Name) {
+                return 1;
+            } else {
+                return 0;
+            }
+        }
+    });
+}
+
 
 export function getDnsService(key, provider, credentials, refresh = false) {
     if (refresh) {
@@ -121,31 +167,76 @@ class DnsService {
         return this.provider.listDomains();
     }
 
-    async listRecords(domain) {
-        let {count, list} = await this.provider.listRecords(domain);
-        list = list.map(r => {
+    async listRecords(domain, options = {}) {
+        const recordOptions = normalizeRecordListOptions(options);
+        let result;
+        if (!recordOptions.paged && !recordOptions.keyword) {
+            result = await this.provider.listRecords(domain);
+        } else if (recordOptions.keyword && this.provider.supportsRecordKeywordSearch !== true) {
+            result = await this.searchRecordsByPage(domain, recordOptions);
+        } else {
+            result = await this.provider.listRecords(domain, recordOptions);
+        }
+
+        let {count = 0, list = []} = result || {};
+        list = sortRecords(list.map(r => {
             r.Domain = domain;
-            return r
-        }).sort((a, b) => {
-            if (a.Type < b.Type) {
-                return -1;
-            } else if (a.Type > b.Type) {
-                return 1;
-            } else {
-                // If Type is the same, then sort by Name
-                if (a.Name < b.Name) {
-                    return -1;
-                } else if (a.Name > b.Name) {
-                    return 1;
-                } else {
-                    return 0;
-                }
-            }
-        })
+            return r;
+        }));
         return {
             count,
-            list
+            list,
+            page: result?.page || recordOptions.page,
+            pageSize: result?.pageSize || recordOptions.pageSize,
+            hasMore: result?.hasMore,
+            searchedAll: result?.searchedAll,
         }
+    }
+
+    async searchRecordsByPage(domain, options) {
+        const {page, pageSize, keyword} = options;
+        const targetEnd = page * pageSize;
+        const scanPageSize = Math.max(pageSize, 100);
+        const matchedRecords = [];
+        let scanPage = 1;
+        let hasMore = true;
+        let searchedAll = false;
+
+        while (hasMore) {
+            const result = await this.provider.listRecords(domain, {
+                page: scanPage,
+                pageSize: scanPageSize,
+                keyword: "",
+            });
+            const list = result?.list || [];
+            matchedRecords.push(...list.filter(record => recordMatchesKeyword(record, keyword)));
+
+            const count = Number(result?.count || 0);
+            hasMore = typeof result?.hasMore === "boolean"
+                ? result.hasMore
+                : scanPage * scanPageSize < count;
+
+            if (matchedRecords.length >= targetEnd && hasMore) {
+                break;
+            }
+            if (!hasMore) {
+                searchedAll = true;
+            }
+            scanPage++;
+        }
+
+        const sortedRecords = sortRecords(matchedRecords);
+        const start = (page - 1) * pageSize;
+        const list = sortedRecords.slice(start, start + pageSize);
+        const count = searchedAll ? sortedRecords.length : Math.max(targetEnd + 1, sortedRecords.length);
+        return {
+            count,
+            list,
+            page,
+            pageSize,
+            hasMore: !searchedAll || start + list.length < sortedRecords.length,
+            searchedAll,
+        };
     }
 
     async checkDomain(domain) {

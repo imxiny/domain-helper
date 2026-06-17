@@ -36,14 +36,22 @@ class VolcengineDnsService {
         }
     }
 
-    async listRecords(domain) {
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 500), 10), 1);
         const {zone_id} = getDomain("volcengine/" + domain);
-        const requestQuery = {ZID: zone_id, PageSize: 500};
+        const requestQuery = {ZID: zone_id, PageNumber: page, PageSize: pageSize};
         try {
             const checkZoneResult = await this._request("GET", requestQuery, {}, this.secretId, this.secretKey, "ListRecords", {});
+            const count = checkZoneResult?.Result?.TotalCount || 0;
             return {
-                count: checkZoneResult?.Result?.TotalCount,
-                list: checkZoneResult?.Result?.Records.map(r => {
+                count,
+                page,
+                pageSize,
+                hasMore: page * pageSize < count,
+                searchedAll: false,
+                list: (checkZoneResult?.Result?.Records || []).map(r => {
                     return {
                         RecordId: r.RecordID,
                         Name: r.Host,

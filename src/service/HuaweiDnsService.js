@@ -105,14 +105,17 @@ class HuaweiDnsService {
         })
     }
 
-    async listRecords(domain) {
+    async listRecords(domain, options = {}) {
+        const hasOptions = Object.keys(options).length > 0;
+        const page = Math.max(parseInt(options.page || 1, 10), 1);
+        const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 500), 10), 1);
         // 根据doman 获取zoneId
         const {zone_id} = getDomain("huawei/" + domain);
         return new Promise((resolve, reject) => {
             this.getToken().then(async token => {
                 const options = {
                     hostname: this.hostname,
-                    path: `/v2/zones/${zone_id}/recordsets`,
+                    path: `/v2/zones/${zone_id}/recordsets?limit=${pageSize}&offset=${(page - 1) * pageSize}`,
                     method: 'GET',
                     headers: {'X-Auth-Token': token}
                 };
@@ -121,8 +124,13 @@ class HuaweiDnsService {
                 if (response.statusCode >= 400) {
                     reject(new Error(response.data.error.message))
                 }
+                const total = response.data.metadata.total_count;
                 resolve({
-                    count: response.data.metadata.total_count,
+                    count: total,
+                    page,
+                    pageSize,
+                    hasMore: page * pageSize < total,
+                    searchedAll: false,
                     list: response.data.recordsets.map(record => {
                         // 如果 name 是根域名，替换成 @
                         if (record.name === `${domain}.`) {

@@ -6,7 +6,8 @@ import {
     MonitorOutlined,
     UserOutlined,
     CloudUploadOutlined,
-    AlertOutlined
+    AlertOutlined,
+    PartitionOutlined
 } from '@ant-design/icons-vue';
 
 // 核心功能直接导入
@@ -52,6 +53,15 @@ const routes = [
         meta: {
             title: 'SSL监控',
             icon: MonitorOutlined
+        }
+    },
+    {
+        path: '/private-dns',
+        name: 'PrivateDns',
+        component: () => import('@/components/PrivateDnsList.vue'),
+        meta: {
+            title: '私有解析',
+            icon: PartitionOutlined
         }
     },
     {

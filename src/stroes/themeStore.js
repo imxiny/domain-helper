@@ -4,6 +4,7 @@ import {ref} from 'vue';
 const defaultConfig = {
     menuExpand: false, // 菜单是否展开
     domainListView: 'card', // 域名页面 显示模式
+    privateDnsRecordColumns: ['Name', 'Type', 'RecordLine', 'Value', 'TTL', 'Status', 'Remark', 'CreatedAt', 'UpdatedAt', 'operation'],
     showExpiredWarn: true, // 是否显示过期提醒
     alarmDays: 10, // 过期提醒天数
     notifications: {
