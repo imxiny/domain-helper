@@ -34,6 +34,7 @@ const loading = ref(false);
 const selectedRecords = ref([]);
 const selectedRowKeys = ref([]);
 const requestKeyword = ref("");
+const requestSearchMode = ref("fuzzy");
 const editingRemarkRecordId = ref("");
 const editingRemarkValue = ref("");
 const savingRemarkRecordId = ref("");
@@ -50,6 +51,7 @@ const searchForm = reactive({
     type: null,
     status: null,
     keyword: "",
+    searchMode: "fuzzy",
 });
 const tablePagination = computed(() => ({...pagination}));
 
@@ -96,13 +98,18 @@ const remarkEditableClouds = ["ali", "tencent", "huawei", "volcengine"];
 const remarkEditable = computed(() => remarkEditableClouds.includes(nowZoneInfo.value?.cloud));
 
 const calcRecords = computed(() => {
-    if (!searchForm.type && !searchForm.status) {
+    const key = searchForm.keyword.toString().trim().toLowerCase();
+    if (!key && !searchForm.type && !searchForm.status) {
         return records.value;
     }
     return records.value.filter(item => {
         const matchType = !searchForm.type || item.Type === searchForm.type;
         const matchStatus = !searchForm.status || item.Status === (searchForm.status === "true");
-        return matchType && matchStatus;
+        const matchKeyword = requestSearchMode.value !== "exact" || !key ||
+            [item.Name, item.Value].some(value =>
+                (value || "").toString().toLowerCase() === key
+            );
+        return matchType && matchStatus && matchKeyword;
     });
 });
 
@@ -165,6 +172,7 @@ const refreshRecords = (options = {}) => {
         page: pagination.current,
         pageSize: pagination.pageSize,
         keyword: requestKeyword.value,
+        searchMode: requestSearchMode.value,
     }).then(res => {
         if (requestId !== recordsRequestId) return;
         pagination.total = res.count;
@@ -364,12 +372,14 @@ const onTableChange = nextPagination => {
 
 const applyKeywordSearch = debounce(() => {
     requestKeyword.value = searchForm.keyword.toString().trim();
+    requestSearchMode.value = searchForm.searchMode;
     refreshRecords({resetPage: true});
 }, 350);
 
 const onKeywordSearch = () => {
     applyKeywordSearch.cancel();
     requestKeyword.value = searchForm.keyword.toString().trim();
+    requestSearchMode.value = searchForm.searchMode;
     refreshRecords({resetPage: true});
 };
 
@@ -421,6 +431,13 @@ onBeforeUnmount(() => {
                 <a-select v-model:value="searchForm.status" allow-clear placeholder="解析状态" style="width: 110px">
                     <a-select-option value="true">启用</a-select-option>
                     <a-select-option value="false">暂停</a-select-option>
+                </a-select>
+                <a-select
+                    v-model:value="searchForm.searchMode"
+                    style="width: 120px"
+                >
+                    <a-select-option value="fuzzy">模糊搜索</a-select-option>
+                    <a-select-option value="exact">精确搜索</a-select-option>
                 </a-select>
                 <a-input-search v-model:value="searchForm.keyword" placeholder="搜索主机记录/记录值" style="width: 200px" @change="applyKeywordSearch" @search="onKeywordSearch"></a-input-search>
             </a-space>

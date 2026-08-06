@@ -112,16 +112,19 @@ function normalizeRecordListOptions(options = {}) {
         page,
         pageSize,
         keyword: (options.keyword || "").toString().trim(),
+        searchMode: options.searchMode === "exact" ? "exact" : "fuzzy",
     };
 }
 
-function recordMatchesKeyword(record, keyword) {
+function recordMatchesKeyword(record, keyword, searchMode = "fuzzy") {
     if (!keyword) {
         return true;
     }
     const key = keyword.toLowerCase();
     return [record.Name, record.Value].some(value =>
-        (value || "").toString().toLowerCase().includes(key)
+        searchMode === "exact"
+            ? (value || "").toString().toLowerCase() === key
+            : (value || "").toString().toLowerCase().includes(key)
     );
 }
 
@@ -172,6 +175,16 @@ class DnsService {
         let result;
         if (!recordOptions.paged && !recordOptions.keyword) {
             result = await this.provider.listRecords(domain);
+        } else if (recordOptions.keyword && recordOptions.searchMode === "exact") {
+            if (this.provider.supportsExactRecordKeywordSearch === true) {
+                result = await this.provider.listRecords(domain, recordOptions);
+            } else {
+                result = await this.searchRecordsByPage(
+                    domain,
+                    recordOptions,
+                    this.provider.supportsRecordKeywordSearch === true
+                );
+            }
         } else if (recordOptions.keyword && this.provider.supportsRecordKeywordSearch !== true) {
             result = await this.searchRecordsByPage(domain, recordOptions);
         } else {
@@ -193,10 +206,11 @@ class DnsService {
         }
     }
 
-    async searchRecordsByPage(domain, options) {
-        const {page, pageSize, keyword} = options;
+    async searchRecordsByPage(domain, options, useProviderKeyword = false) {
+        const {page, pageSize, keyword, searchMode} = options;
         const targetEnd = page * pageSize;
         const scanPageSize = Math.max(pageSize, 100);
+        const scanAllMatches = searchMode === "exact";
         const matchedRecords = [];
         let scanPage = 1;
         let hasMore = true;
@@ -206,17 +220,22 @@ class DnsService {
             const result = await this.provider.listRecords(domain, {
                 page: scanPage,
                 pageSize: scanPageSize,
-                keyword: "",
+                // A provider-side fuzzy match reduces the candidate set before
+                // the local exact-match check below.
+                keyword: useProviderKeyword ? keyword : "",
+                searchMode,
             });
             const list = result?.list || [];
-            matchedRecords.push(...list.filter(record => recordMatchesKeyword(record, keyword)));
+            matchedRecords.push(...list.filter(record =>
+                recordMatchesKeyword(record, keyword, searchMode)
+            ));
 
             const count = Number(result?.count || 0);
             hasMore = typeof result?.hasMore === "boolean"
                 ? result.hasMore
                 : scanPage * scanPageSize < count;
 
-            if (matchedRecords.length >= targetEnd && hasMore) {
+            if (!scanAllMatches && matchedRecords.length >= targetEnd && hasMore) {
                 break;
             }
             if (!hasMore) {

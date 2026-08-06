@@ -126,6 +126,7 @@ const tablePagination = computed(() => ({
     total: pagination.total,
 }));
 const requestKeyword = ref("");
+const requestSearchMode = ref("fuzzy");
 let recordsRequestId = 0;
 
 // 添加计算属性来统计不同类型的记录数量
@@ -193,6 +194,7 @@ const refreshRecords = (options = {}) => {
             page: pagination.current,
             pageSize: pagination.pageSize,
             keyword: requestKeyword.value,
+            searchMode: requestSearchMode.value,
         })
         .then((r) => {
             if (requestId !== recordsRequestId) {
@@ -229,6 +231,7 @@ const initRecords = (domainInfo) => {
     nowDomainInfo.value = domainInfo;
     pagination.current = 1;
     requestKeyword.value = searchForm.keyword.toString().trim();
+    requestSearchMode.value = searchForm.searchMode;
     refreshAllDomains();
     refreshRecords();
 };
@@ -324,12 +327,13 @@ const deleteRecordDo = () => {
 const searchForm = reactive({
     type: null,
     keyword: "",
+    searchMode: "fuzzy",
     isMonitoring: null,
     status: null,
 });
 
 const calcRecords = computed(() => {
-    const key = searchForm.keyword.toString().toLowerCase();
+    const key = searchForm.keyword.toString().trim().toLowerCase();
 
     // 如果没有任何过滤条件，直接返回所有记录
     if (
@@ -346,7 +350,11 @@ const calcRecords = computed(() => {
         const matchMonitoring = !searchForm.isMonitoring || item.monitor;
         const matchStatus =
             !searchForm.status || item.Status === (searchForm.status === "true");
-        return matchType && matchMonitoring && matchStatus;
+        const matchKeyword = requestSearchMode.value !== "exact" || !key ||
+            [item.Name, item.Value].some(value =>
+                (value || "").toString().toLowerCase() === key
+            );
+        return matchType && matchMonitoring && matchStatus && matchKeyword;
     });
 
     if (!key) {
@@ -477,12 +485,14 @@ const onTableChange = (nextPagination) => {
 
 const applyKeywordSearch = debounce(() => {
     requestKeyword.value = searchForm.keyword.toString().trim();
+    requestSearchMode.value = searchForm.searchMode;
     refreshRecords({resetPage: true});
 }, 350);
 
 const onKeywordSearch = () => {
     applyKeywordSearch.cancel();
     requestKeyword.value = searchForm.keyword.toString().trim();
+    requestSearchMode.value = searchForm.searchMode;
     refreshRecords({resetPage: true});
 };
 
@@ -1122,6 +1132,13 @@ const getMonitorColor = (days) => {
                 >
                     <a-select-option value="true">启用</a-select-option>
                     <a-select-option value="false">暂停</a-select-option>
+                </a-select>
+                <a-select
+                    v-model:value="searchForm.searchMode"
+                    style="width: 120px"
+                >
+                    <a-select-option value="fuzzy">模糊搜索</a-select-option>
+                    <a-select-option value="exact">精确搜索</a-select-option>
                 </a-select>
                 <a-input-search
                     v-model:value="searchForm.keyword"

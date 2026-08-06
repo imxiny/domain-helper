@@ -101,12 +101,19 @@ class AliDnsService {
         return await this._aliRest(action, payload);
     }
 
+    supportsExactRecordKeywordSearch = true;
+
     async listRecords(domain, options = {}) {
         const hasOptions = Object.keys(options).length > 0;
         const page = Math.max(parseInt(options.page || 1, 10), 1);
         const pageSize = Math.max(parseInt(options.pageSize || (hasOptions ? 20 : 500), 10), 1);
+        const keyword = (options.keyword || "").toString().trim();
         const action = 'DescribeDomainRecords';
         const params = {DomainName: domain, PageSize: pageSize, PageNumber: page};
+        if (keyword) {
+            params.KeyWord = keyword;
+            params.SearchMode = options.searchMode === "exact" ? "EXACT" : "LIKE";
+        }
         const payload = this._buildQuery(action, params);
         return new Promise((resolve, reject) => {
             this._aliRest(action, payload).then(res => {
