@@ -29,16 +29,19 @@ function normalizeRecordListOptions(options = {}) {
         page,
         pageSize,
         keyword: (options.keyword || "").toString().trim(),
+        searchMode: options.searchMode === "exact" ? "exact" : "fuzzy",
     };
 }
 
-function recordMatchesKeyword(record, keyword) {
+function recordMatchesKeyword(record, keyword, searchMode = "fuzzy") {
     if (!keyword) {
         return true;
     }
     const key = keyword.toLowerCase();
     return [record.Name, record.Value].some(value =>
-        (value || "").toString().toLowerCase().includes(key)
+        searchMode === "exact"
+            ? (value || "").toString().toLowerCase() === key
+            : (value || "").toString().toLowerCase().includes(key)
     );
 }
 
@@ -108,7 +111,17 @@ class PrivateDnsService {
     async listRecords(zone, options = {}) {
         const recordOptions = normalizeRecordListOptions(options);
         let result;
-        if (recordOptions.keyword && this.provider.supportsRecordKeywordSearch !== true) {
+        if (recordOptions.keyword && recordOptions.searchMode === "exact") {
+            if (this.provider.supportsExactRecordKeywordSearch === true) {
+                result = await this.provider.listRecords(zone, recordOptions);
+            } else {
+                result = await this.searchRecordsByPage(
+                    zone,
+                    recordOptions,
+                    this.provider.supportsRecordKeywordSearch === true
+                );
+            }
+        } else if (recordOptions.keyword && this.provider.supportsRecordKeywordSearch !== true) {
             result = await this.searchRecordsByPage(zone, recordOptions);
         } else {
             result = await this.provider.listRecords(zone, recordOptions);
@@ -129,10 +142,11 @@ class PrivateDnsService {
         };
     }
 
-    async searchRecordsByPage(zone, options) {
-        const {page, pageSize, keyword} = options;
+    async searchRecordsByPage(zone, options, useProviderKeyword = false) {
+        const {page, pageSize, keyword, searchMode} = options;
         const targetEnd = page * pageSize;
         const scanPageSize = Math.max(pageSize, 100);
+        const scanAllMatches = searchMode === "exact";
         const matchedRecords = [];
         let scanPage = 1;
         let hasMore = true;
@@ -142,15 +156,18 @@ class PrivateDnsService {
             const result = await this.provider.listRecords(zone, {
                 page: scanPage,
                 pageSize: scanPageSize,
-                keyword: "",
+                keyword: useProviderKeyword ? keyword : "",
+                searchMode,
             });
             const list = result?.list || [];
-            matchedRecords.push(...list.filter(record => recordMatchesKeyword(record, keyword)));
+            matchedRecords.push(...list.filter(record =>
+                recordMatchesKeyword(record, keyword, searchMode)
+            ));
             const count = Number(result?.count || 0);
             hasMore = typeof result?.hasMore === "boolean"
                 ? result.hasMore
                 : scanPage * scanPageSize < count;
-            if (matchedRecords.length >= targetEnd && hasMore) {
+            if (!scanAllMatches && matchedRecords.length >= targetEnd && hasMore) {
                 break;
             }
             if (!hasMore) {
